@@ -29,7 +29,11 @@ class ShapeNetMultiView(Dataset):
 
         # Setup renderer once
         raster_settings = RasterizationSettings(
-            image_size=image_size, blur_radius=0.0, faces_per_pixel=1
+            image_size=image_size,
+            blur_radius=0.0,
+            faces_per_pixel=1,
+            bin_size=0,  # Use naive rasterization
+            max_faces_per_bin=100000  # Increase max faces per bin
         )
         self.renderer = MeshRenderer(
             rasterizer=MeshRasterizer(raster_settings=raster_settings),
