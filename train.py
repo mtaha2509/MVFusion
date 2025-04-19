@@ -4,11 +4,50 @@ from torch.utils.data import DataLoader
 from datasets import ShapeNetMultiView
 from models import DinoV2Extractor, ViewAwareFusion
 from utils import collate_fn, compute_mesh_loss
-from spar3d.system import SPAR3D
-import gc
+import sys
 import os
-from datetime import datetime
+
+# Add the SPAR3D directory to Python path
+spar3d_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stable-point-aware-3d')
+sys.path.append(spar3d_path)
+from spar3d.system import SPAR3D
+from pytorch3d.structures import Meshes
+from pytorch3d.io import load_obj
+
+import gc
 import logging
+
+def convert_spar3d_mesh_to_pytorch3d(spar3d_mesh, device='cuda'):
+    """
+    Convert SPAR3D mesh format to PyTorch3D format.
+    
+    Args:
+        spar3d_mesh: SPAR3D Mesh object
+        device: Device to move tensors to
+    
+    Returns:
+        pytorch3d_mesh: PyTorch3D Meshes object
+    """
+    # Get vertices and faces from SPAR3D mesh
+    # SPAR3D uses v_pos for vertices and t_pos_idx for faces
+    vertices = spar3d_mesh.v_pos.to(device)  # (Nv, 3)
+    faces = spar3d_mesh.t_pos_idx.to(device)  # (Nf, 3)
+    
+    # Get vertex normals if available
+    if hasattr(spar3d_mesh, 'v_nrm'):
+        normals = spar3d_mesh.v_nrm.to(device)  # (Nv, 3)
+    else:
+        normals = None
+    
+    # Create PyTorch3D mesh
+    # Note: PyTorch3D Meshes expects lists of tensors
+    pytorch3d_mesh = Meshes(
+        verts=[vertices],  # List of (Nv, 3) tensors
+        faces=[faces],     # List of (Nf, 3) tensors
+        verts_normals=[normals] if normals is not None else None
+    )
+    
+    return pytorch3d_mesh
 
 # Setup logging
 logging.basicConfig(
@@ -115,14 +154,17 @@ def train_fusion_model():
                 with torch.no_grad():
                     try:
                         # SPAR3D expects DINOv2 features, which our fused features should match
-                        mesh, _ = spar3d.run_image(
+                        spar3d_mesh, _ = spar3d.run_image(
                             fused.unsqueeze(0),  # Add batch dimension
                             bake_resolution=512,
                             remesh="none"
                         )
                         
-                        # Compute loss between generated and ground truth mesh
-                        loss = compute_mesh_loss(mesh, gt_meshes[0], num_samples=1000, device=device)
+                        # Convert SPAR3D mesh to PyTorch3D format
+                        pred_mesh = convert_spar3d_mesh_to_pytorch3d(spar3d_mesh, device)
+                        
+                        # Compute loss between predicted and ground truth meshes
+                        loss = compute_mesh_loss(pred_mesh, gt_meshes[0], num_samples=1000, device=device)
                         
                         # Backward pass
                         opt.zero_grad()
@@ -133,7 +175,7 @@ def train_fusion_model():
                         successful_batches += 1
                         
                         # Clear memory
-                        del mesh
+                        del spar3d_mesh, pred_mesh
                         torch.cuda.empty_cache()
                         
                     except Exception as e:
